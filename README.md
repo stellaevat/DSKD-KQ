@@ -63,7 +63,27 @@ The evaluation log and results can be found in __log.txt__ in the outputs direct
 ```python
 python code/eval_stats.py --fname ${LOG_PATH}
 ```
-where `LOG_PATH` is the path to the __log.txt__ file.
+where `LOG_PATH` is the path to the __log.txt__ file. The outputs can be found in __stats.txt__ in the same directory.
+
+
+### To analyse a trained model in terms of its alignments:
+```bash
+bash scripts/eval/run_analyse.sh ${CKPT_PATH} ${BATCH_SIZE} ${NUM_SAMPLES}
+```
+where `NUM_SAMPLES` is the number of samples to generate alignments for, `BATCH_SIZE` is the desired batch size for the generation of alignments, and `CKPT_PATH` is the directory where the trained model weights are stored, e.g.:
+```bash
+ outputs/gpt2/gpt2-base/dual_space_kd_with_cma/criterion=dual_space_kd_with_cma__skewed_reverse_kl-bf16__teacher=Qwen1.5-1.8B__kd^rate=0.5__kd^temp=2.0__epoch=20__bsz=4x2x4=32__lr=0.0005__proj^lr=0.001/epoch20_step7140_loss7.2313_rougel26.5932
+```
+
+The alignment outputs can be found in __align.jsonl__ in the outputs directory. 
+
+To get heatmaps from these, run:
+```python
+python code/heatmaps.py --fname ${SAVE_DIR} ${NUM_HEATMAPS}
+```
+where `SAVE_DIR` is the directory containing the __align.jsonl__ file, and `NUM_HEATMAPS` is an optional argument for the number of heatmaps to generate (otherwise heatmaps are generated for all samples in the alignment file). 
+
+The heatmap outputs can be found in the new __heatmaps__ directory, inside the given `SAVE_DIR`.
 
 
 | For more details, what follows is the original README file.       |

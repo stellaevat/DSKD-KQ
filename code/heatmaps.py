@@ -51,7 +51,7 @@ def heatmap(data, x_labels, y_labels, fname, shift=False):
 
 def analyse_main(save_dir, num_heatmaps=None):
     jsonl_fname = os.path.join(save_dir, "align.jsonl")
-    heatmap_dir = os.path.join(save_dir, "heatmaps_v2")
+    heatmap_dir = os.path.join(save_dir, "heatmaps")
     os.makedirs(heatmap_dir, exist_ok=True)
     
     with open(jsonl_fname, "r") as f:
