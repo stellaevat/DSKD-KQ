@@ -59,6 +59,50 @@ class Distiller(nn.Module):
             self.stu2tea_id_mapping_tea = torch.LongTensor(list(self.stu2tea_id_mapping.values())).to(device)
             self.stu2tea_id_mapping_stu = torch.LongTensor(list(self.stu2tea_id_mapping.keys())).to(device)
 
+
+        # ==========================================================================================================
+        # For KQ Matching
+        # ==========================================================================================================
+        
+        self.kq_adver_type = args.kq_adver_type
+        if self.kq_adver_type is not None:
+            self.kq_hidden_size = args.kq_hidden_size
+            self.kq_attention_size = 2 * self.teacher_hidden_size
+
+        if self.kq_adver_type in ['gan', 'ct']:
+            self.kq_dropout1 = nn.Dropout(0.1)
+            self.kq_highway1 = nn.Linear(self.kq_attention_size, self.kq_attention_size)
+            self.kq_linear1 = nn.Linear(self.kq_attention_size, self.kq_hidden_size)
+            self.kq_linear2 = nn.Linear(self.kq_hidden_size, 1)
+            self.kq_nonlinear = nn.LeakyReLU(0.1)
+
+        if self.kq_adver_type == 'gan':
+            self.kq_criterion = nn.BCEWithLogitsLoss()
+
+        if self.kq_adver_type == 'ct':
+            self.kq_dropout2 = nn.Dropout(0.1)
+
+            self.kq_highway2 = nn.Linear(self.kq_attention_size, self.kq_attention_size)
+
+            self.kq_linear3 = nn.Linear(self.kq_attention_size, self.kq_hidden_size)
+            self.kq_linear4 = nn.Linear(self.kq_hidden_size, self.kq_hidden_size)
+
+            self.kq_linear5 = nn.Linear(self.kq_attention_size, self.kq_hidden_size)
+            self.kq_linear6 = nn.Linear(self.kq_hidden_size, self.kq_hidden_size)
+
+            self.kq_linear7 = nn.Linear(self.kq_attention_size, self.kq_hidden_size)
+            self.kq_linear8 = nn.Linear(self.kq_hidden_size, self.kq_hidden_size)
+
+            self.kq_linear9 = nn.Linear(self.kq_attention_size, self.kq_hidden_size)
+            self.kq_linear10 = nn.Linear(self.kq_hidden_size, self.kq_hidden_size)
+
+            self.kq_nonlinear2 = nn.LeakyReLU(0.1)
+            self.kq_nonlinear3 = nn.LeakyReLU(0.1)
+            self.kq_nonlinear4 = nn.LeakyReLU(0.1)
+        
+        # ==========================================================================================================
+
+
     @staticmethod
     def add_distiller_args(parser):
         group = parser.add_argument_group("distiller", "distiller configurations")
@@ -83,6 +127,7 @@ class Distiller(nn.Module):
         group.add_argument("--student-to-teacher-id-mapping", type=str, default=None,
                            help='path for the vocab alignment file (id, student-to-teacher)')
         return parser
+        
     
     def load_tokenizer(self, model_type, path):
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
@@ -282,11 +327,111 @@ class Distiller(nn.Module):
     def forward(self, criterion, batch, logging_output, loss_denom):
         input_data = batch["input_batch"]
         output_data = batch["output_batch"]
-        loss, logging_output = criterion(
+        out_distill = criterion(
             self,
             input_data, 
             output_data,
             logging_output,
             loss_denom,
         )
-        return loss, logging_output
+        return out_distill
+
+
+# ==========================================================================================================
+# From KQ Matching
+# ==========================================================================================================
+
+# Adapted from https://github.com/gpeyre/SinkhornAutoDiff
+# Adapted from https://github.com/dfdazac/wassdistance/blob/master/layers.py
+class SinkhornDistance(nn.Module):
+    r"""
+    Given two empirical measures each with :math:`P_1` locations
+    :math:`x\in\mathbb{R}^{D_1}` and :math:`P_2` locations :math:`y\in\mathbb{R}^{D_2}`,
+    outputs an approximation of the regularized OT cost for point clouds.
+
+    Args:
+        eps (float): regularization coefficient
+        max_iter (int): maximum number of Sinkhorn iterations
+        reduction (string, optional): Specifies the reduction to apply to the output:
+            'none' | 'mean' | 'sum'. 'none': no reduction will be applied,
+            'mean': the sum of the output will be divided by the number of
+            elements in the output, 'sum': the output will be summed. Default: 'none'
+
+    Shape:
+        - Input: :math:`(N, P_1, D_1)`, :math:`(N, P_2, D_2)`
+        - Output: :math:`(N)` or :math:`()`, depending on `reduction`
+    """
+    def __init__(self, eps, max_iter, reduction='none'):
+        super(SinkhornDistance, self).__init__()
+        self.eps = eps
+        self.max_iter = max_iter
+        self.reduction = reduction
+
+    def forward(self, x, y):
+        # The Sinkhorn algorithm takes as input three variables :
+        C = self._cost_matrix(x, y)  # Wasserstein cost function
+        x_points = x.shape[-2]
+        y_points = y.shape[-2]
+        if x.dim() == 2:
+            batch_size = 1
+        else:
+            batch_size = x.shape[0]
+
+        # both marginals are fixed with equal weights
+        mu = torch.empty(batch_size, x_points, dtype=torch.float,
+                         requires_grad=False).fill_(1.0 / x_points).squeeze().cuda()
+        nu = torch.empty(batch_size, y_points, dtype=torch.float,
+                         requires_grad=False).fill_(1.0 / y_points).squeeze().cuda()
+
+        u = torch.zeros_like(mu)
+        v = torch.zeros_like(nu)
+        # To check if algorithm terminates because of threshold
+        # or max iterations reached
+        actual_nits = 0
+        # Stopping criterion
+        thresh = 1e-1
+
+        # Sinkhorn iterations
+        for i in range(self.max_iter):
+            u1 = u  # useful to check the update
+            u = self.eps * (torch.log(mu+1e-8) - torch.logsumexp(self.M(C, u, v), dim=-1)) + u
+            v = self.eps * (torch.log(nu+1e-8) - torch.logsumexp(self.M(C, u, v).transpose(-2, -1), dim=-1)) + v
+            err = (u - u1).abs().sum(-1).mean()
+
+            actual_nits += 1
+            if err.item() < thresh:
+                break
+
+        U, V = u, v
+        # Transport plan pi = diag(a)*K*diag(b)
+        pi = torch.exp(self.M(C, U, V))
+        # Sinkhorn distance
+        cost = torch.sum(pi * C, dim=(-2, -1))
+
+        if self.reduction == 'mean':
+            cost = cost.mean()
+        elif self.reduction == 'sum':
+            cost = cost.sum()
+
+        return cost, pi, C
+
+    @staticmethod
+    def _cost_matrix(x, y, p=2):
+        # Returns the matrix of $|x_i-y_j|^p$.
+
+        x_col = x.unsqueeze(-2)
+        y_lin = y.unsqueeze(-3)
+        C = torch.sum((torch.abs(x_col - y_lin)) ** p, -1)
+        return C
+
+    def M(self, C, u, v):
+        # Modified cost for logarithmic updates
+        # $M_{ij} = (-c_{ij} + u_i + v_j) / \epsilon$
+        return (-C + u.unsqueeze(-1) + v.unsqueeze(-2)) / self.eps
+
+    @staticmethod
+    def ave(u, u1, tau):
+        # Barycenter subroutine, used by kinetic acceleration through extrapolation.
+        return tau * u + (1 - tau) * u1
+
+# ==========================================================================================================

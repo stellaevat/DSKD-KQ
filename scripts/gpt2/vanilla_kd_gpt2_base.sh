@@ -1,6 +1,7 @@
 #! /bin/bash
-GPUS=(0 1 2 3)
+GPUS=(0)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
+export CUDA_LAUNCH_BLOCKING=1
 
 MASTER_ADDR=localhost
 MASTER_PORT=66$(($RANDOM%90+10))
@@ -15,12 +16,13 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 # model
-BASE_PATH=path_to_dskd_project
+BASE_PATH="/home/${USER}/rds/hpc-work/DSKD"
 CKPT_TYPE="gpt2"
 CKPT_NAME="gpt2-base"
 CKPT_PATH="${BASE_PATH}/model_hub/${CKPT_TYPE}/${CKPT_NAME}"
-TEACHER_MODEL_TYPE="gpt2-xlarge"
-TEACHER_MODEL_PATH="path_to_teacher_sft_ckpt"
+TEACHER_MODEL_TYPE="gpt2"
+TEACHER_MODEL_NAME="gpt2-xlarge"
+TEACHER_MODEL_PATH="${BASE_PATH}/model_hub/${TEACHER_MODEL_TYPE}/${TEACHER_MODEL_NAME}"
 # data
 DATA_DIR="${BASE_PATH}/data/dolly/"
 # task
@@ -33,7 +35,7 @@ EVAL_BATCH_SIZE=32
 EPOCH=20
 KD_RATE=0.5
 KD_TEMP=2.0
-KD_OBJ="forward_kl"   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
+KD_OBJ=${1}   # [forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl]
 # length
 MAX_LENGTH=512
 # runtime
@@ -110,8 +112,9 @@ export NCCL_DEBUG=""
 export WANDB_DISABLED=True
 export TF_CPP_MIN_LOG_LEVEL=3
 export PYTHONPATH=${BASE_PATH}
+export TORCHELASTIC_ERROR_FILE=${SAVE_PATH}/error.log
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/code/distillation.py ${OPTS}"
 
 # ${CMD}
 ${CMD} \
->> ${SAVE_PATH}/train.log 2>&1 &
+>> ${SAVE_PATH}/train.log 2>&1

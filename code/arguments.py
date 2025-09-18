@@ -108,6 +108,8 @@ def add_hp_args(parser: argparse.ArgumentParser):
                        help='Data Loader batch size')
     group.add_argument('--eval-batch-size', type=int, default=32,
                        help='Data Loader batch size')
+    group.add_argument('--eval-num-samples', type=int,
+                       help='Number of samples from the dataset to evaluate/analyse')
     group.add_argument('--clip-grad', type=float, default=1.0,
                        help='gradient clipping')
     group.add_argument('--total-iters', type=int, default=None,
@@ -135,6 +137,9 @@ def add_hp_args(parser: argparse.ArgumentParser):
                        help='weight-decay')
     group.add_argument('--loss-scale', type=float, default=65536,
                        help='loss scale')
+    group.add_argument("--kq-rate", type=float, default=0.01)
+    group.add_argument("--kq-adver-type", type=str, default=None)
+    group.add_argument("--kq-hidden-size", type=int, default=768)
     group.add_argument("--kd-rate", type=float, default=0.5)
     group.add_argument("--kd-temperature", type=float, default=1.0)
     group.add_argument("--kd-objective", type=str, default="forward_kl")
@@ -202,7 +207,7 @@ def get_args():
     assert all(["--" not in x for x in unknown]), unknown
     
     args.local_rank = int(os.getenv("LOCAL_RANK", "0"))
-        
+
     args.n_gpu = args.n_gpu * args.n_nodes
         
     return args

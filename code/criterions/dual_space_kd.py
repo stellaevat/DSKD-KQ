@@ -51,7 +51,7 @@ class DualSpaceKD(VariousDivergence):
         logging_output = self.record_logging_output(
             logging_output, batch_denom, log
         )
-        return loss / batch_denom, logging_output
+        return {"loss":loss / batch_denom, "logits":logits, "log":logging_output}
 
     def compute_dual_space_kd_loss(
         self, outputs, teacher_outputs, output_data, distiller, log
@@ -67,7 +67,7 @@ class DualSpaceKD(VariousDivergence):
         # student space
         t2s_hiddens = distiller.projectors["t2s"](teacher_hiddens)
         t2s_logits = t2s_hiddens.matmul(
-            distiller.student_model.lm_head.weight.detach().transpose(-1, -2)
+            distiller.student_model.lm_head.weight.detach().transpose(-1, -2) # matrix multiply with the weights of the last student layer (prediction head) - why not same as line 81?
         )
         t2s_ce_loss = self.compute_cross_entropy_loss(t2s_logits, target)[0]
         
@@ -96,5 +96,4 @@ class DualSpaceKD(VariousDivergence):
         log["s2t_acc"] = s2t_acc
         log["kd_loss"] = kd_loss
         return kd_loss, log
-    
     

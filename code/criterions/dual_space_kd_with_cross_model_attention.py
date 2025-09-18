@@ -38,7 +38,7 @@ class DualSpaceKDWithCMA(VariousDivergence):
                 position_ids=input_data.get(f"teacher_{distiller.teacher_model_type}_position_ids", None), 
                 output_hidden_states=True)
         
-        kd_loss, log = self.compute_dual_space_kd_loss_with_cma(
+        kd_loss, log, cma, _, _ = self.compute_dual_space_kd_loss_with_cma(
             outputs, teacher_outputs, input_data, output_data, distiller, log
         )
         loss = (1.0 - self.kd_rate) * loss + self.kd_rate * kd_loss
@@ -52,7 +52,7 @@ class DualSpaceKDWithCMA(VariousDivergence):
         logging_output = self.record_logging_output(
             logging_output, batch_denom, log
         )
-        return loss / batch_denom, logging_output
+        return {"loss":loss / batch_denom, "logits":logits, "alignment":cma, "log":logging_output}
     
     def compute_dual_space_kd_loss_with_cma(
         self, outputs, teacher_outputs, input_data, output_data, distiller, log
@@ -60,7 +60,7 @@ class DualSpaceKDWithCMA(VariousDivergence):
         target = output_data["label"]
         teacher_target = output_data[f"teacher_{distiller.teacher_model_type}_label"]
         
-        pad_mask = target.ne(self.padding_id)
+        pad_mask = target.ne(self.padding_id) # padding in the target indicates either padding or masked input
         teacher_pad_mask = teacher_target.ne(self.padding_id)
 
         hiddens = outputs.hidden_states[-1]
@@ -90,7 +90,7 @@ class DualSpaceKDWithCMA(VariousDivergence):
             and hasattr(distiller.teacher_model.model, "wte"):
             tea_embed_tokens = distiller.teacher_model.transformer.wte
         else:
-            raise NotImplementedError
+            raise NotImplementedError 
 
         formal_target = torch.where(pad_mask, target, torch.zeros_like(target))
         formal_input = torch.where(pad_mask, input_data["input_ids"], torch.zeros_like(target))
@@ -105,12 +105,15 @@ class DualSpaceKDWithCMA(VariousDivergence):
         stu_index_embeds = torch.cat([stu_input_embeds, stu_target_embeds], -1)
         tea_index_embeds = torch.cat([tea_input_embeds, tea_target_embeds], -1)
 
-        norm_tea_index_embeds = tea_index_embeds / tea_index_embeds.std()
+        norm_tea_index_embeds = tea_index_embeds / tea_index_embeds.std() # Normalise "for faster convergence"
         norm_tea_target_embeds = tea_target_embeds / tea_target_embeds.std()
         norm_teacher_hiddens = teacher_hiddens / teacher_hiddens.std()
 
-        stu_q_hiddens = distiller.projectors["query"](stu_index_embeds).float()
-        tea_k_hiddens = norm_tea_index_embeds.float()
+        queries = distiller.projectors["query"](stu_index_embeds)
+        stu_q_hiddens = queries.float()
+        
+        keys = norm_tea_index_embeds
+        tea_k_hiddens = keys.float()
 
         stu_v_hiddens = distiller.projectors["s2t"](hiddens).float()
         tea_v_hiddens = distiller.projectors["t2s"](
@@ -120,14 +123,14 @@ class DualSpaceKDWithCMA(VariousDivergence):
         align = stu_q_hiddens.matmul(tea_k_hiddens.transpose(-1, -2))
         align = align / math.sqrt(2 * teacher_hiddens.shape[-1])
         align_mask = pad_mask.float().unsqueeze(-1) * teacher_pad_mask.float().unsqueeze(1)
-        align = align + (1.0 - align_mask) * (-100000)
+        align = align + (1.0 - align_mask) * (-100000) # Make masked values very small
 
         t2s_weight = torch.softmax(align, -1)        
         t2s_hiddens = t2s_weight.matmul(tea_v_hiddens).to(hiddens)
         t2s_logits = t2s_hiddens.matmul(
             distiller.student_model.lm_head.weight.detach().transpose(-1, -2)
-        )
-        t2s_ce_loss = self.compute_cross_entropy_loss(t2s_logits, target)[0]
+        ) # Equation 4 (except where is the softmax?)
+        t2s_ce_loss = self.compute_cross_entropy_loss(t2s_logits, target)[0] # Equation 5
         t2s_acc_mask = t2s_logits.argmax(-1).eq(target)
         t2s_acc = (t2s_acc_mask * pad_mask).sum()
         max_probs = (t2s_logits.softmax(-1).max(-1)[0] * pad_mask).sum()
@@ -138,18 +141,18 @@ class DualSpaceKDWithCMA(VariousDivergence):
         if not self.args.only_save_projector:  # skip if only train projectors (pre-train projectors)
             t2s_kd_loss = self.dist_func(
                 outputs.logits, t2s_logits.detach(), target, reduction="none", use_tea_temp=True
-            )
-            t2s_kd_loss = (t2s_kd_loss * pad_mask * t2s_acc_mask).sum()
+            ) # Equation 6
+            t2s_kd_loss = (t2s_kd_loss * pad_mask * t2s_acc_mask).sum() 
 
             s2t_weight = torch.softmax(align.transpose(-1, -2), -1)
             s2t_hiddens = s2t_weight.matmul(stu_v_hiddens).to(hiddens)
             s2t_logits = s2t_hiddens.matmul(
             distiller.teacher_model.lm_head.weight.detach().transpose(-1, -2)
-            )
+            ) # Equation 8 (except where is the softmax?)
 
             s2t_kd_loss = self.compute_forward_kl_divergence(
                 s2t_logits, teacher_outputs.logits, teacher_target, reduction="none"
-            )
+            ) # Equation 9
             s2t_kd_loss = (s2t_kd_loss * teacher_pad_mask).sum()
             s2t_acc = (s2t_logits.argmax(-1).eq(teacher_target) * teacher_pad_mask).sum() * pad_mask.sum() / teacher_pad_mask.sum()
 
@@ -161,5 +164,5 @@ class DualSpaceKDWithCMA(VariousDivergence):
             kd_loss = t2s_ce_loss
 
         log["kd_loss"] = kd_loss
-        return kd_loss, log
+        return kd_loss, log, t2s_weight, queries, keys
     

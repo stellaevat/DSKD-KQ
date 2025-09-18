@@ -1,11 +1,13 @@
 #!/bin/bash
-GPUS=(0 1 2 3)
-WORK_DIR=path_to_dskd_project
+GPUS=(0)
+WORK_DIR=.
 MASTER_PORT=66$(($RANDOM%90+10))
 DEVICE=$(IFS=,; echo "${GPUS[*]}")
 # echo ${DEVICE}
 
-MODEL_PATH=path_to_ori_model_ckpt
+export CUDA_LAUNCH_BLOCKING=1
+
+MODEL_PATH="/home/set56/rds/hpc-work/DSKD/model_hub/tinyllama/tinyllama-1.1b-3T"
 CKPT_PATH=${1}
 BATCH_SIZE=${2-16}
 

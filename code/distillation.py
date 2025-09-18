@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.optim import AdamW
 import deepspeed
@@ -164,8 +165,8 @@ def finetune(
 
             for batch in global_batch:
                 st_time = time.time()
-                loss, logging_output = model(
-                    criterion, batch, logging_output, loss_denom)
+                out_distill = model(criterion, batch, logging_output, loss_denom)
+                loss, logging_output = out_distill["loss"], out_distill["log"]
                 model.backward(loss)
                 model.step()
 
@@ -254,20 +255,21 @@ def finetune(
                         eval_loss
                     )
                 save_dir_path = os.path.join(args.save_dir, ckpt_name)
-                
+
                 if dist.get_rank() == 0:
                     os.makedirs(save_dir_path, exist_ok=True)
                     if not args.only_save_projector:
                         log_rank("Saving tokenizer...")
                         tokenizer.save_pretrained(save_dir_path)
                         log_rank("Saving model...")
-                        model.module.student_model.save_pretrained(save_dir_path, safe_serialization=False)
+                        model.module.student_model.save_pretrained(save_dir_path)
                     if hasattr(model.module, "projectors"):
                         log_rank("Saving projector...")
                         torch.save(
                             model.module.projectors.state_dict(), 
                             os.path.join(save_dir_path, "projector.pt")
                         )
+                        
                     # only keep best N checkpoints
                     if args.eval_gen:
                         model_list.append({
@@ -301,7 +303,7 @@ def finetune(
                         log_rank("Saving tokenizer...")
                         tokenizer.save_pretrained(save_dir_path)
                         log_rank("Saving model...")
-                        model.module.student_model.save_pretrained(save_dir_path, safe_serialization=False)
+                        model.module.student_model.save_pretrained(save_dir_path)
                     if hasattr(model.module, "projectors"):
                         log_rank("Saving projector...")
                         torch.save(
@@ -433,7 +435,6 @@ def evaluate(args, tokenizer, model, dataset, split, device, repeat_times=None):
     
     eval_res = {}
     if args.eval_gen:
-        # TODO: parallel sampling N different results using model.generate()
         for i in range(repeat_times):
             for input_batch, output_batch, gen_data in tqdm(
                 dataloader, 
@@ -502,7 +503,7 @@ def evaluate(args, tokenizer, model, dataset, split, device, repeat_times=None):
     model.train()
     return eval_info["loss"], eval_res
 
-
+@record
 def main():
     torch.backends.cudnn.enabled = False
     
@@ -570,6 +571,7 @@ def main():
     optimizer = get_optimizer(args, distiller.student_model)
     optimizer = distiller.add_optimizer_param_group(optimizer)
     lr_scheduler = get_learning_rate_scheduler(args, optimizer)
+
 
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=distiller,

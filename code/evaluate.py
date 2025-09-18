@@ -3,6 +3,7 @@ import os
 
 import torch
 import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
 import deepspeed
 
 import json
@@ -17,8 +18,6 @@ from utils import save_rank
 from utils import get_tokenizer, get_model
 
 from evaluate_main import evaluate_main, prepare_dataset_main
-# from evaluate_exposure_bias import evaluate_eb, prepare_dataset_eb
-
 
 torch.set_num_threads(4)
 
@@ -39,7 +38,7 @@ def setup_model(args, ds_config, device):
     # get the memory usage
     return model
 
-
+@record
 def main():
     torch.backends.cudnn.enabled = False
     

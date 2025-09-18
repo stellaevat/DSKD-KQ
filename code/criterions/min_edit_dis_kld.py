@@ -85,7 +85,7 @@ class MinEditDisForwardKLD(VariousDivergence):
             batch_denom,
             log
         )
-        return loss / batch_denom, logging_output
+        return {"loss":loss / batch_denom, "logits":logits, "log":logging_output}
 
     def get_aligned_teacher_logits(
         self, logits, teacher_logits, input_data, output_data, distiller,

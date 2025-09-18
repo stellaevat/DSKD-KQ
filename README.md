@@ -1,3 +1,76 @@
+# DUAL-SPACE KNOWLEDGE DISTILLATION WITH KEY-QUERY MATCHING FOR LARGE LANGUAGE MODELS WITH VOCABULARY MISMATCH
+
+<small>Stella Eva Tsiapali, Cong-Thanh Do, Kate Knill</small>
+
+## Fork Instructions
+
+The training and evaluation datasets are already saved in this fork (`data`), but they were downloaded (and renamed) from [here](https://drive.google.com/drive/folders/1ZUsNVgWevACV9D-AHVNi9C7PX_2itzb8?usp=sharing), as preprocessed by Gu et al.
+
+The __.safetensors__ files for the models used need to be added locally to their corresponding directories (`model_hub`), from the following links:
+- [GPT2-120M](https://huggingface.co/openai-community/gpt2)
+- [GPT2-1.5B](https://github.com/microsoft/LMOps/blob/main/minillm/README.md#31-resources) (pre-trained on Dolly by Gu et al.)
+- [Qwen1.5-1.8B](https://huggingface.co/Qwen/Qwen1.5-1.8B)
+
+
+### To install dependencies:
+```python
+pip install -r requirements.txt
+```
+
+### To train GPT2-base with different criteria:
+
+__DSKD-CMA__
+```bash
+bash scripts/gpt2/dskd_cma_gpt2_base.sh ${KD_OBJ}
+```
+
+__DSKD-CLP__
+```bash
+bash scripts/gpt2/dskd_clp_gpt2_base.sh ${KD_OBJ}
+```
+
+__DSKD-CLA__
+```bash
+bash scripts/gpt2/dskd_cla_gpt2_base.sh ${KD_OBJ}
+```
+
+__DSKD-CMA with KQ Matching__
+```bash
+bash scripts/gpt2/dskd_cma_plus_kq_gpt2_base.sh ${KD_OBJ} ${ADVER_TYPE}
+```
+
+where:
+- `KD_OBJ` is the choice of distance function, from: `forward_kl, reverse_kl, js_divergence, skewed_forward_kl, skewed_reverse_kl, adaptive_kl`.
+- `ADVER_TYPE` for KQ Matching is the type of of matching used, from: `gan, ct`. Currently, for GPT2-base `gan` leads to the best performance.
+- In line 20 of any script, replace the `BASE_PATH` with the absolute path to your DSKD directory.
+- In line 2 of any script, the ordinals of available GPUs can be adjusted (e.g. `(0)` for 1 GPU, or `(0 1 2 3)` for 4 GPUs).
+
+The training log and results can be found in __train.log__ in the outputs directory. If applicable, the error log can be found in __error.log__ in the same directory.
+
+
+### To evaluate a trained model:
+```bash
+bash scripts/eval/run_eval.sh ${CKPT_PATH} ${EVAL_BATCH_SIZE}
+```
+where `EVAL_BATCH_SIZE` is the desired batch size for evaluation, and `CKPT_PATH` is the directory where the trained model weights are stored, e.g.:
+```bash
+ outputs/gpt2/gpt2-base/dual_space_kd_with_cma/criterion=dual_space_kd_with_cma__skewed_reverse_kl-bf16__teacher=Qwen1.5-1.8B__kd^rate=0.5__kd^temp=2.0__epoch=20__bsz=4x2x4=32__lr=0.0005__proj^lr=0.001/epoch20_step7140_loss7.2313_rougel26.5932
+```
+
+In line 2 of any script, the ordinals of available GPUs can be adjusted (e.g. `(0)` for 1 GPU, or `(0 1 2 3)` for 4 GPUs).
+
+The evaluation log and results can be found in __log.txt__ in the outputs directory. To get mean/std. stats from the evaluation outputs, run:
+```python
+python code/eval_stats.py --fname ${LOG_PATH}
+```
+where `LOG_PATH` is the path to the __log.txt__ file.
+
+
+| For more details, what follows is the original README file.       |
+|-------------------------------------------------------------------|
+
+<br /><br /><br />
+
 # Dual-Space Knowledge Distillation for Large Language Models (EMNLP 2024)
 
 <small>[Songming Zhang](https://songmzhang.github.io/), Xue Zhang, Zengkui Sun, Yufeng Chen*, Jinan Xu</small>

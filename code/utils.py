@@ -103,6 +103,7 @@ def init_distributed_ds(args):
 
     if args.local_rank is not None:
         device = args.local_rank
+
     torch.cuda.set_device(device)
 
     deepspeed.init_distributed(timeout=timedelta(minutes=30))
@@ -316,4 +317,3 @@ def get_learning_rate_scheduler(args, optimizer):
         raise ValueError(f"lr_scheduler of type {args.lr_decay_style} is not supported yet.")
 
     return lr_scheduler
-

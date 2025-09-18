@@ -1,5 +1,6 @@
 #! /bin/bash
 set -e
+export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=${1}
 MASTER_ADDR=localhost
 MASTER_PORT=${2}
@@ -76,4 +77,5 @@ export PYTHONPATH=${BASE_PATH}
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/code/evaluate.py ${OPTS}"
 echo ${CMD}
 
-${CMD}
+${CMD} \
+>> ${SAVE_PATH}/eval.log 2>&1

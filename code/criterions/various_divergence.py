@@ -1,3 +1,4 @@
+import math
 import torch
 from .cross_entropy_loss import CrossEntropyLoss
 
@@ -82,7 +83,63 @@ class VariousDivergence(CrossEntropyLoss):
             )
 
         logging_output = self.record_logging_output(logging_output, batch_denom, log)
-        return loss / batch_denom, logging_output
+        return {"loss":loss / batch_denom, "logits":logits, "log":logging_output}
+    
+    
+    def get_chunk_alignment_mask(self, s_offsets, t_offsets, chunk_mask):
+        # Group (chunk number) assignment for each token
+        s_groups = torch.zeros((chunk_mask.shape[0], chunk_mask.shape[1]), dtype=torch.int64, device=chunk_mask.device)
+        t_groups = torch.zeros((chunk_mask.shape[0], chunk_mask.shape[2]), dtype=torch.int64, device=chunk_mask.device)
+        max_group = 0
+
+        # For each sample
+        for i in range(len(s_offsets)):
+            group = 0
+            s_chunk_end, t_chunk_end = 0, 0
+            while s_chunk_end < len(s_offsets[i]) and t_chunk_end < len(t_offsets[i]):
+                # Start new chunk
+                s_chunk_start, t_chunk_start = s_chunk_end, t_chunk_end
+                s_token_end, t_token_end = s_offsets[i, s_chunk_end], t_offsets[i, t_chunk_end]
+
+                # Find end token of current chunk
+                while s_token_end != t_token_end:
+                    if s_token_end < t_token_end:
+                        # Moving from prompt to response
+                        if (s_chunk_end == len(s_offsets[i]) - 1) or (s_offsets[i, s_chunk_end + 1] < s_token_end):
+                            break
+                        s_chunk_end += 1 
+                        s_token_end = s_offsets[i, s_chunk_end]
+                    else:
+                        # Moving from prompt to response
+                        if (t_chunk_end == len(t_offsets[i]) - 1) or (t_offsets[i, t_chunk_end + 1] < t_token_end):
+                            break
+                        t_chunk_end += 1
+                        t_token_end = t_offsets[i, t_chunk_end]
+
+                # Update mask and group assignment
+                chunk_mask[i, s_chunk_start : s_chunk_end + 1, t_chunk_start : t_chunk_end + 1] = 1.
+                s_groups[i, s_chunk_start : s_chunk_end + 1] = group
+                t_groups[i, t_chunk_start : t_chunk_end + 1] = group
+
+                # First token of each chunk made negative (to mark chunk beginnings)
+                s_groups[i, s_chunk_start] = -group
+                t_groups[i, t_chunk_start] = -group
+
+                s_chunk_end, t_chunk_end = s_chunk_end + 1, t_chunk_end + 1
+                group += 1
+
+            if group > max_group:
+                max_group = group
+
+        return chunk_mask, s_groups, t_groups, max_group
+    
+
+    def apply_temperature_scaling(self, s_logits, t_logits, use_tea_temp=False):
+        s_logits = s_logits / self.kd_temp
+        t_logits = t_logits / self.kd_temp
+        t_logits = t_logits / self.tea_temp if use_tea_temp else t_logits
+        return s_logits, t_logits
+    
 
     def compute_forward_kl_divergence(
         self, 
@@ -93,14 +150,12 @@ class VariousDivergence(CrossEntropyLoss):
         log=None, 
         use_tea_temp=False
     ):
-        logits = logits / self.kd_temp
-        teacher_logits = teacher_logits / self.kd_temp
-        teacher_logits = teacher_logits / self.tea_temp if use_tea_temp else teacher_logits
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
 
         lprobs = torch.log_softmax(logits, -1, dtype=torch.float32)
         teacher_probs = torch.softmax(teacher_logits, -1, dtype=torch.float32)
         teacher_lprobs = torch.log_softmax(teacher_logits, -1, dtype=torch.float32)
-        kld = (teacher_probs * (teacher_lprobs - lprobs))
+        kld = (teacher_probs * (teacher_lprobs - lprobs)) # definition of KL divergence
         inf_mask = logits.isinf()
         kld = kld.masked_fill_(inf_mask, 0.0).sum(-1)
         
@@ -123,9 +178,7 @@ class VariousDivergence(CrossEntropyLoss):
         log=None, 
         use_tea_temp=False
     ):
-        logits = logits / self.kd_temp
-        teacher_logits = teacher_logits / self.kd_temp
-        teacher_logits = teacher_logits / self.tea_temp if use_tea_temp else teacher_logits
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
 
         probs = torch.softmax(logits, -1, dtype=torch.float32)
         lprobs = torch.log_softmax(logits, -1, dtype=torch.float32)
@@ -154,17 +207,11 @@ class VariousDivergence(CrossEntropyLoss):
         use_tea_temp=False
     ):
         alpha = self.args.adaptive_kl_alpha
-        probs = torch.softmax(
-            logits / self.kd_temp, dim=-1, dtype=torch.float32
-        )
-        if use_tea_temp:
-            teacher_probs = torch.softmax(
-                teacher_logits / self.tea_temp / self.kd_temp, dim=-1, dtype=torch.float32
-            )
-        else:
-            teacher_probs = torch.softmax(
-                teacher_logits / self.kd_temp, dim=-1, dtype=torch.float32
-            )
+
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
+        probs = torch.softmax(logits, dim=-1)
+        teacher_probs = torch.softmax(teacher_logits, dim=-1)
+
         sorted_teacher_probs, sorted_idx = teacher_probs.sort(-1)
         sorted_probs = probs.gather(-1, sorted_idx)
         gap = (sorted_teacher_probs - sorted_probs).abs()
@@ -197,9 +244,7 @@ class VariousDivergence(CrossEntropyLoss):
         log=None, 
         use_tea_temp=False
     ):
-        logits = logits / self.kd_temp
-        teacher_logits = teacher_logits / self.kd_temp
-        teacher_logits = teacher_logits / self.tea_temp if use_tea_temp else teacher_logits
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
 
         student_probs = torch.softmax(logits, -1, dtype=torch.float32)
         teacher_probs = torch.softmax(teacher_logits, -1, dtype=torch.float32)
@@ -229,9 +274,7 @@ class VariousDivergence(CrossEntropyLoss):
         log=None, 
         use_tea_temp=False
     ):
-        logits = logits / self.kd_temp
-        teacher_logits = teacher_logits / self.kd_temp
-        teacher_logits = teacher_logits / self.tea_temp if use_tea_temp else teacher_logits
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
 
         student_probs = torch.softmax(logits, -1, dtype=torch.float32)
         teacher_probs = torch.softmax(teacher_logits, -1, dtype=torch.float32)
@@ -262,10 +305,7 @@ class VariousDivergence(CrossEntropyLoss):
         log=None, 
         use_tea_temp=False
     ):
-        # temperature scaling
-        logits = logits / self.kd_temp
-        teacher_logits = teacher_logits / self.kd_temp
-        teacher_logits = teacher_logits / self.tea_temp if use_tea_temp else teacher_logits
+        logits, teacher_logits = self.apply_temperature_scaling(logits, teacher_logits, use_tea_temp=use_tea_temp)
 
         probs = torch.softmax(logits, -1, dtype=torch.float32)
         teacher_probs = torch.softmax(teacher_logits, -1, dtype=torch.float32)

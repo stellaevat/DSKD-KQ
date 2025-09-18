@@ -1,0 +1,9 @@
+python==3.12
+deepspeed>=0.14.0
+editdistance
+matplotlib
+numpy
+torch>=2.0.1
+transformers==4.31
+peft>=0.8.2
+rouge-score>=0.1.2

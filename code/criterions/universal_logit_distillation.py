@@ -62,7 +62,7 @@ class UniversalLogitDistillation(CrossEntropyLoss):
         logging_output = self.record_logging_output(
             logging_output, batch_denom, log
         )
-        return loss / batch_denom, logging_output
+        return {"loss":loss / batch_denom, "logits":logits, "log":logging_output}
 
     def compute_universal_logit_distillation_loss(
         self, outputs, teacher_outputs, output_data, distiller, log
